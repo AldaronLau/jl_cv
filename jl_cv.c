@@ -84,15 +84,14 @@ static void jl_cv_setf(jl_cv_t* jl_cv, jl_cv_flip_t f) {
 /* Export Functions */
 
 jl_cv_t* jl_cv_init(jl_t* jlc) {
-	jl_cv_t* jl_cv = NULL;
-	jl_me_alloc(jlc, (void**)&jl_cv, sizeof(jl_cv_t), 0);
+	jl_cv_t* jl_cv = jl_memi(jlc, sizeof(jl_cv_t));
 	jl_cv->jlc = jlc;
 	jl_cv->jl_gr = jlc->jl_gr;
 	jl_cv->image = NULL;
 	jl_cv->storage = cvCreateMemStorage(0);
 	jl_cv->element = cvCreateStructuringElementEx(3, 3, 0, 0,
 		CV_SHAPE_CROSS, NULL);
-	jl_cv->jpeg = jl_me_strt_make(0);
+	jl_cv->jpeg = jl_data_make(0);
 	jl_cv->texturesinited = 0;
 	return jl_cv;
 }
@@ -101,14 +100,30 @@ void jl_cv_kill(jl_cv_t* jl_cv) {
 	cvReleaseCapture(&(jl_cv->camera));
 }
 
-void jl_cv_init_webcam(jl_cv_t* jl_cv, jl_cv_output_t output, jl_cv_flip_t f) {
+/**
+ * Initialize a webcam for streaming.
+ * @param jl_cv: The library context.
+ * @param output: What should be displayed after the filters are applied.
+ * @param f: How the image should be rotated.
+ * @param which: Which webcam to open ( 0 = built-in, 1 = external, unless no
+	built-in camera then, 0 = external)
+**/
+void jl_cv_init_webcam(jl_cv_t* jl_cv, jl_cv_output_t output, jl_cv_flip_t f,
+	u32_t which)
+{
 	jl_cv_setf(jl_cv, f);
-	jl_cv->camera = cvCaptureFromCAM(0); // open the default camera id == 0
+	jl_cv->camera = cvCaptureFromCAM(which); // open the camera id
+//	cvSetCaptureProperty(jl_cv->camera, CV_CAP_PROP_EXPOSURE, 0.);
+
+//	cvSetCaptureProperty(jl_cv->camera, CV_CAP_PROP_ISO_SPEED, 1.);
+//	cvSetCaptureProperty(jl_cv->camera, CV_CAP_PROP_SATURATION, .5);
+//	cvSetCaptureProperty(jl_cv->camera, CV_CAP_PROP_GAIN, 0.);
 	// If webcam can't be opened, then fail
 	if( jl_cv->camera == NULL ) {
-		fprintf(stderr, " Failed to open a Camera\n" );
+		jl_print(jl_cv->jlc, "Failed to open camera #%d", which);
 		exit(1);
 	}
+	cvSetCaptureProperty(jl_cv->camera, CV_CAP_PROP_BRIGHTNESS, 0.);
 	jl_cv_webcam_get__(jl_cv);
 	jl_cv_hsv_init__(jl_cv);
 	jl_cv->output = output;
@@ -194,8 +209,10 @@ u32_t jl_cv_loop_detect_lines(jl_cv_t* jl_cv, u32_t max_rtn,
 		1,			// Distance resolution (in pixels)
 		CV_PI/25,		// Angle resolution (in radians)
 		filter_out,		// Accumulator threshold parameter
+// 2 Lines to comment out on rpi
 		minlen,			// Minimum line length
 		minlen*2,		// Max gap between line seg.s to join.
+//
 		0, CV_PI		// Default Range in C++
 	);
 	count = lines->total >= max_rtn ? max_rtn : lines->total;
@@ -211,7 +228,7 @@ u32_t jl_cv_loop_detect_lines(jl_cv_t* jl_cv, u32_t max_rtn,
  * Find the width and height of detected objects.
 **/
 u32_t jl_cv_loop_objectrects(jl_cv_t* jl_cv,u32_t max_rtn,jl_cv_rect_t* rtn_rects){
-	int i, total;
+	int i, total, count;
 	CvSeq *contours = NULL;
 	CvRect rect;
 
@@ -225,7 +242,8 @@ u32_t jl_cv_loop_objectrects(jl_cv_t* jl_cv,u32_t max_rtn,jl_cv_rect_t* rtn_rect
 		CV_CHAIN_APPROX_SIMPLE,
 		cvPoint(0,0)
 	);
-	for(i = 0; i < total; i++) {
+	count = total >= max_rtn ? max_rtn : total;
+	for(i = 0; i < count; i++) {
 		rect = cvBoundingRect(contours, 0);
 		rtn_rects[i] = (jl_cv_rect_t) {
 			rect.x, rect.y, rect.width, rect.height };
@@ -310,27 +328,27 @@ double jl_cv_loop_maketx(jl_cv_t* jl_cv) {
  * @param jl_cv: JL_CV context.
  * @returns the data.
 **/
-strt jl_cv_loop_makejf(jl_cv_t* jl_cv) {
+data_t* jl_cv_loop_makejf(jl_cv_t* jl_cv) {
 	jl_t* jlc = jl_cv->jlc;
 	uint32_t w = jl_cv->disp_image->width;
 	uint32_t h = jl_cv->disp_image->height;
-	strt jpeg = jl_vi_make_jpeg(jlc, 10, 
+	data_t* jpeg = jl_vi_make_jpeg(jlc, 100, 
 		(void*)jl_cv->disp_image->imageData, w, h);
 //	uint32_t l = jpeg->size;
 
-	jl_io_print(jlc, "w:%d...h%d", w, h);
+	jl_print(jlc, "w:%d...h%d", w, h);
 	jl_cv_getoutput(jl_cv);
 	// Clear the final string.
-	jl_me_strt_clear(jlc, jl_cv->jpeg);
+	jl_data_clear(jlc, jl_cv->jpeg);
 	// Add w
-//	jl_io_print(jlc, "length: %d", jl_cv->jpeg->size);
+//	jl_print(jlc, "length: %d", jl_cv->jpeg->size);
 //	jl_me_strt_insert_data(jlc, jl_cv->jpeg, &(l), 4);
-//	jl_io_print(jlc, "length: %d", jl_cv->jpeg->size);
+//	jl_print(jlc, "length: %d", jl_cv->jpeg->size);
 	// Add h
 //	jl_me_strt_insert_data(jlc, jl_cv->jpeg, &(h), 4);
 	// Add data.
-	jl_me_strt_insert_data(jlc, jl_cv->jpeg, jpeg->data, jpeg->size);
+	jl_data_insert_data(jlc, jl_cv->jpeg, jpeg->data, jpeg->size);
 	// Free temporary string.
-	jl_me_strt_free(jpeg);
+	jl_data_free(jpeg);
 	return jl_cv->jpeg;
 }
